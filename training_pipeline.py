@@ -1,8 +1,8 @@
 """
-training_pipeline.py — runs daily via GitHub Actions.
-Reads all features from the Hopsworks feature group, rebuilds the 3-day-ahead
-targets, trains and compares models, and registers the best one as a new
-version in the Model Registry.
+Runs once a day on GitHub Actions. It reads all the features back from the
+Hopsworks feature group, builds the 1, 2 and 3 day ahead targets, trains a few
+models and compares them, and saves the best one as a new version in the model
+registry.
 """
 import os, joblib
 import numpy as np, pandas as pd
@@ -20,18 +20,18 @@ NON_FEATURES = ["date", "city", "datetime", "y1", "y2", "y3"]
 def run():
     project, fs = ac.get_feature_store()
 
-    # 1) read features
+    # pull the features back out of the store
     fg = fs.get_feature_group(name=ac.FG_NAME, version=ac.FG_VERSION)
     df = fg.read().sort_values("datetime").set_index("datetime")
     print(f"read {len(df)} rows from feature store")
 
-    # 2) targets: AQI 1/2/3 days ahead
+    # targets are the AQI 1, 2 and 3 days into the future
     df["y1"] = df.aqi.shift(-1); df["y2"] = df.aqi.shift(-2); df["y3"] = df.aqi.shift(-3)
     df = df.dropna()
     feat_cols = [c for c in df.columns if c not in NON_FEATURES]
     X, Y = df[feat_cols], df[["y1", "y2", "y3"]]
 
-    # 3) time-based split
+    # split by time rather than randomly, so we test on the most recent stretch
     n_test = min(120, max(20, len(df)//5))
     X_tr, X_te = X.iloc[:-n_test], X.iloc[-n_test:]
     Y_tr, Y_te = Y.iloc[:-n_test], Y.iloc[-n_test:]
@@ -52,12 +52,12 @@ def run():
     best_rmse, best_model = scored[best_name]
     print(f"best: {best_name}  mean RMSE {best_rmse:.2f}")
 
-    # per-horizon metrics for the registry
+    # keep the per-day metrics to store next to the model
     pred = best_model.predict(X_te)
     metrics = {f"rmse_plus{i+1}d": float(mean_squared_error(Y_te.iloc[:, i], pred[:, i])**0.5) for i in range(3)}
     metrics.update({f"r2_plus{i+1}d": float(r2_score(Y_te.iloc[:, i], pred[:, i])) for i in range(3)})
 
-    # 4) register new model version
+    # save the winner as a new model version
     bundle = {"model": best_model, "features": feat_cols, "name": best_name}
     os.makedirs("aqi_model", exist_ok=True)
     joblib.dump(bundle, "aqi_model/model.joblib")
