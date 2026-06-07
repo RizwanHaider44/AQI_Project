@@ -1,0 +1,21 @@
+name: feature-pipeline
+
+on:
+  schedule:
+    - cron: '0 * * * *'        # every hour (UTC) — GitHub cron can be a few minutes late
+  workflow_dispatch:            # adds a manual "Run workflow" button for testing
+
+jobs:
+  update-features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python feature_pipeline.py
+        env:
+          OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          
