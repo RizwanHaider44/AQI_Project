@@ -1,30 +1,29 @@
 """
-aqi_common.py — shared logic used by both pipelines.
-Keeps fetching, AQI computation, and feature engineering in ONE place so the
-features written hourly are identical to the features the model trains on.
-API keys are read from environment variables (set as GitHub Secrets).
+Shared helpers used by both pipelines: fetching data, computing the AQI, and
+building features. I keep them in one file so the features written each hour
+are exactly the same as the ones the model was trained on. API keys come from
+environment variables, which are set as GitHub Secrets.
 """
 import os, time, datetime as dt
 import numpy as np, pandas as pd
 import requests, hopsworks
 
-# ---------------- CONFIG ----------------
+# settings
 LAT, LON, CITY = 24.86, 67.01, "Karachi"
 PROJECT = "Internship_project"
 FG_NAME, FG_VERSION = "aqi_features_daily", 1
 POLL = ["co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
-
 OWM_KEY = os.environ["OPENWEATHER_API_KEY"]
 HOPSWORKS_KEY = os.environ["HOPSWORKS_API_KEY"]
 
-# ---------------- HOPSWORKS ----------------
+# connect to my Hopsworks project
 def get_feature_store():
     project = hopsworks.login(api_key_value=HOPSWORKS_KEY, project=PROJECT)
     return project, project.get_feature_store()
 
-# ---------------- FETCH RAW POLLUTION ----------------
+# pull raw hourly pollution data from OpenWeather, a chunk of dates at a time
 def fetch_pollution(start_utc, end_utc):
-    """Pull hourly air-pollution history from OpenWeather between two epoch seconds."""
+    """Get hourly pollution data from OpenWeather between two UTC epoch seconds."""
     rows, window, s = [], 30 * 24 * 3600, start_utc
     while s < end_utc:
         e = min(s + window, end_utc)
@@ -39,7 +38,8 @@ def fetch_pollution(start_utc, end_utc):
     df["datetime"] = pd.to_datetime(df["dt"], unit="s", utc=True)
     return df.set_index("datetime")
 
-# ---------------- EPA AQI (2024 breakpoints) ----------------
+# US EPA AQI from pollutant concentrations (2024 breakpoint tables).
+# In Karachi the AQI is driven by particulates, so PM2.5 and PM10 set it.
 PM25 = [(0,9.0,0,50),(9.1,35.4,51,100),(35.5,55.4,101,150),(55.5,125.4,151,200),
         (125.5,225.4,201,300),(225.5,325.4,301,400),(325.5,500.4,401,500)]
 PM10 = [(0,54,0,50),(55,154,51,100),(155,254,101,150),(255,354,151,200),
@@ -53,17 +53,16 @@ def _sub_index(C, bp):
             return round((ihi - ilo) / (chi - clo) * (C - clo) + ilo)
     return 500
 
-# ---------------- DAILY FEATURES (must match training) ----------------
+# Build the daily features. This has to line up exactly with what the model
+# was trained on, otherwise predictions go sideways.
 def build_features(raw_hourly):
     df = raw_hourly.copy()
     df[POLL] = df[POLL].replace(-9999.0, np.nan)
     df[POLL] = df[POLL].mask(df[POLL] < 0)
     df[POLL] = df[POLL].interpolate(limit=6).ffill().bfill()
     daily = df[POLL].resample("D").mean().dropna(how="all")
-
     daily["aqi"] = [max(_sub_index(r.pm2_5, PM25), _sub_index(r.pm10, PM10))
                     for r in daily.itertuples()]
-
     d = daily.copy()
     d["month"] = d.index.month.astype("int64"); d["doy"] = d.index.dayofyear.astype("int64"); d["dow"] = d.index.dayofweek.astype("int64")
     d["is_weekend"] = (d.dow >= 5).astype("int64")
@@ -75,7 +74,6 @@ def build_features(raw_hourly):
         d[f"{col}_rmean7"] = d[col].rolling(7).mean()
         d[f"{col}_rstd7"] = d[col].rolling(7).std()
     d["aqi_change"] = d.aqi.diff()
-
     d = d.reset_index().rename(columns={"datetime": "datetime"})
     d["date"] = d["datetime"].dt.strftime("%Y-%m-%d")
     d["city"] = CITY
