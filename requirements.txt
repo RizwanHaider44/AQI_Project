@@ -1,7 +1,9 @@
-hopsworks[python]==4.7.*
+streamlit
+plotly
 pandas
 numpy
 scikit-learn
 xgboost
 requests
 joblib
+hopsworks[python]==4.7.*
