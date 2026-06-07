@@ -1,10 +1,11 @@
 """
-app.py — Karachi AQI 3-day forecast dashboard (Streamlit).
-Self-contained: pulls live data from OpenWeather, rebuilds features, and uses
-the bundled trained model. Does NOT depend on the Hopsworks offline store, so
-it works regardless of cluster/materialization status.
+Karachi AQI dashboard.
 
-Deploy on Streamlit Community Cloud and add OPENWEATHER_API_KEY under Secrets.
+Pulls the last few weeks of pollution data from OpenWeather, rebuilds the same
+features the model was trained on, and shows a 3-day forecast. The model is
+loaded from the repo, so the dashboard runs on its own and does not need
+Hopsworks to be up. Deployed on Streamlit Community Cloud, with the
+OPENWEATHER_API_KEY set as a secret.
 """
 import datetime as dt, time, os
 import numpy as np, pandas as pd, requests, joblib
@@ -16,7 +17,7 @@ POLL = ["co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
 
 st.set_page_config(page_title=f"{CITY} AQI Forecast", page_icon="🌫️", layout="wide")
 
-# ---------- API key (Streamlit secret, env, or manual input) ----------
+# OpenWeather key: try Streamlit secrets first, then an env var, then ask for it
 OWM_KEY = ""
 try:
     OWM_KEY = st.secrets.get("OPENWEATHER_API_KEY", "")
@@ -29,7 +30,8 @@ if not OWM_KEY:
         st.info("Add OPENWEATHER_API_KEY in the app's Secrets, or paste it above.")
         st.stop()
 
-# ---------- EPA AQI (2024 breakpoints) ----------
+# Turn pollutant concentrations into the US EPA AQI (2024 breakpoint tables).
+# PM2.5 and PM10 are what drive the AQI in Karachi, so I use those.
 PM25 = [(0,9.0,0,50),(9.1,35.4,51,100),(35.5,55.4,101,150),(55.5,125.4,151,200),
         (125.5,225.4,201,300),(225.5,325.4,301,400),(325.5,500.4,401,500)]
 PM10 = [(0,54,0,50),(55,154,51,100),(155,254,101,150),(255,354,151,200),
@@ -42,6 +44,7 @@ def _sub(C, bp):
             return round((ihi-ilo)/(chi-clo)*(max(C,clo)-clo)+ilo)
     return 500
 
+# AQI bands: the label and colour each forecast card gets
 CATEGORIES = [(50,"Good","#34a853"),(100,"Moderate","#f9ab00"),
               (150,"Unhealthy (Sensitive)","#ff6d00"),(200,"Unhealthy","#ea4335"),
               (300,"Very Unhealthy","#8e24aa"),(500,"Hazardous","#6d4c41")]
@@ -50,7 +53,8 @@ def category(aqi):
         if aqi <= hi: return label, color
     return "Hazardous", "#6d4c41"
 
-# ---------- data ----------
+# Grab about 25 days of hourly data, enough history for the 7-day lags. Cached
+# for an hour so we are not hammering the API on every click.
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_pollution(key):
     end = int(dt.datetime.now(dt.timezone.utc).timestamp())
@@ -68,6 +72,7 @@ def fetch_pollution(key):
     df["datetime"] = pd.to_datetime(df["dt"], unit="s", utc=True)
     return df.set_index("datetime")
 
+# Same feature engineering the training pipeline uses, so the model sees what it expects
 def build_features(raw):
     df = raw.copy()
     df[POLL] = df[POLL].replace(-9999.0, np.nan).mask(df[POLL] < 0)
@@ -87,11 +92,11 @@ def build_features(raw):
 
 @st.cache_resource
 def load_model():
-    return joblib.load("model.joblib")
+    return joblib.load("model.joblib")   # bundle: the model plus its feature list
 
-# ---------- run ----------
-st.title(f"🌫️ {CITY} Air Quality — 3-Day Forecast")
-st.caption("Live data from OpenWeather · US EPA AQI · model forecasts the next 3 days")
+# Fetch, build features, and predict the next three days
+st.title(f"🌫️ {CITY} Air Quality, 3-Day Forecast")
+st.caption("Live data from OpenWeather · US EPA AQI · forecasts the next 3 days")
 
 try:
     raw = fetch_pollution(OWM_KEY)
@@ -105,7 +110,7 @@ except Exception as e:
     st.error(f"Could not load data or model: {e}")
     st.stop()
 
-# current
+# today's AQI
 label, color = category(today_aqi)
 st.markdown(f"### Current AQI ({last_date.date()})")
 st.markdown(
@@ -113,14 +118,14 @@ st.markdown(
     f"font-size:28px;font-weight:700;width:260px'>{today_aqi} &nbsp;·&nbsp; {label}</div>",
     unsafe_allow_html=True)
 
-# alert
+# warn if the forecast looks bad
 worst = max(preds)
 if worst > 300:
     st.error(f"⚠️ HAZARDOUS air forecast (AQI up to {worst}). Avoid outdoor exposure.")
 elif worst > 150:
     st.warning(f"⚠️ Unhealthy air forecast (AQI up to {worst}). Sensitive groups take care.")
 
-# forecast cards
+# the three forecast cards
 st.markdown("### 3-Day Forecast")
 cols = st.columns(3)
 for i, (c, p) in enumerate(zip(cols, preds)):
@@ -132,7 +137,7 @@ for i, (c, p) in enumerate(zip(cols, preds)):
         f"<div style='font-size:34px;font-weight:700'>{p}</div>"
         f"<div style='font-size:13px'>{lab}</div></div>", unsafe_allow_html=True)
 
-# trend chart: recent actual + forecast
+# recent history and the forecast on one chart
 hist = daily["aqi"].tail(30)
 fc_dates = [last_date + pd.Timedelta(days=i+1) for i in range(3)]
 fig = go.Figure()
@@ -145,7 +150,7 @@ fig.update_layout(height=380, yaxis_title="AQI", margin=dict(t=20),
 st.markdown("### Recent trend & forecast")
 st.plotly_chart(fig, use_container_width=True)
 
-# top drivers (model feature importance)
+# which features the model leans on most
 try:
     est = bundle["model"].estimators_[0]
     imp = pd.Series(est.feature_importances_, index=bundle["features"]).sort_values(ascending=False).head(10)
@@ -154,4 +159,4 @@ try:
 except Exception:
     pass
 
-st.caption(f"Model: {bundle['name']} · forecasts AQI 1–3 days ahead. Data updates hourly from OpenWeather.")
+st.caption(f"Model: {bundle['name']} · forecasts AQI over the next 3 days. Data updates hourly from OpenWeather.")
