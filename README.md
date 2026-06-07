@@ -1,3 +1,4 @@
+🔗 Live dashboard: https://aqiproject-9cwbnbcacgjdmndnegj7gf.streamlit.app/ 
 # AQI Predictor — Serverless ML Pipeline
 
 Forecasts the Air Quality Index for Karachi 1–3 days ahead. Fully serverless:
