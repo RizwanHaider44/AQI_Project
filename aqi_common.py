@@ -65,8 +65,8 @@ def build_features(raw_hourly):
                     for r in daily.itertuples()]
 
     d = daily.copy()
-    d["month"] = d.index.month; d["doy"] = d.index.dayofyear; d["dow"] = d.index.dayofweek
-    d["is_weekend"] = (d.dow >= 5).astype(int)
+    d["month"] = d.index.month.astype("int64"); d["doy"] = d.index.dayofyear.astype("int64"); d["dow"] = d.index.dayofweek.astype("int64")
+    d["is_weekend"] = (d.dow >= 5).astype("int64")
     d["month_sin"] = np.sin(2*np.pi*d.month/12); d["month_cos"] = np.cos(2*np.pi*d.month/12)
     d["doy_sin"] = np.sin(2*np.pi*d.doy/365);   d["doy_cos"] = np.cos(2*np.pi*d.doy/365)
     for col in ["aqi", "pm2_5", "pm10", "o3", "no2", "co", "so2"]:
